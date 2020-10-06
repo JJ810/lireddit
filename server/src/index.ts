@@ -16,7 +16,7 @@ import { User } from "./entities/User";
 import path from "path";
 
 const main = async () => {
-  const conn = await createConnection({
+  await createConnection({
     type: "postgres",
     url: "postgresql://postgres:hera1234@localhost:5432/lireddit2",
     logging: true,
@@ -24,6 +24,8 @@ const main = async () => {
     migrations: [path.join(__dirname, "./migrations/*")],
     entities: [Post, User],
   });
+
+  await Post.delete({});
 
   const app = express();
   const RedisStore = connectRedis(session);
