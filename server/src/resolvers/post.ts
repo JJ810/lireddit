@@ -1,5 +1,5 @@
-import { isAuth } from "../middleware/isAuth";
-import { MyContext } from "src/types";
+import { isAuth } from "../middleware/isAuth"
+import { MyContext } from "src/types"
 import {
   Resolver,
   Query,
@@ -10,21 +10,20 @@ import {
   Field,
   Ctx,
   UseMiddleware,
-  FieldResolver, 
-  Root, 
+  FieldResolver,
+  Root,
   ObjectType,
-  Info
-} from "type-graphql";
-import { Post } from "./../entities/Post";
-import { getConnection } from "typeorm";
-import { Updoot } from "../entities/Updoot";
+} from "type-graphql"
+import { Post } from "./../entities/Post"
+import { getConnection } from "typeorm"
+import { Updoot } from "../entities/Updoot"
 
 @InputType()
 class PostInput {
   @Field()
-  title: string;
+  title: string
   @Field()
-  text: string;
+  text: string
 }
 
 @ObjectType()
@@ -33,46 +32,69 @@ class PaginatedPosts {
   posts: Post[]
 
   @Field()
-  hasMore: boolean;
+  hasMore: boolean
 }
 
 @Resolver(Post)
 export class PostResolver {
   @FieldResolver(() => String)
-  textSnippet(
-    @Root() root: Post
-  ) {
+  textSnippet(@Root() root: Post) {
     return root.text.slice(0, 50)
   }
 
   @Mutation(() => Boolean)
   @UseMiddleware(isAuth)
   async vote(
-    @Arg('postId', () => Int) postId: number,
-    @Arg('value', () => Int) value: number,
+    @Arg("postId", () => Int) postId: number,
+    @Arg("value", () => Int) value: number,
     @Ctx() { req }: MyContext
   ) {
     const isUpdoot = value !== -1
     const realValue = isUpdoot ? 1 : -1
     const { userId } = req.session
-    // await Updoot.insert({
-    //   userId,
-    //   postId,
-    //   value: realValue
-    // })
-    await getConnection().query(`
-    START TRANSACTION;
 
-    insert into updoot ("userId", "postId", value)
-    values (${userId}, ${postId}, ${realValue});
+    const updoot = await Updoot.findOne({ where: { postId, userId } })
 
-    update post
-    set points = points + ${realValue}
-    where id = ${postId};
+    // the user has voted on the post before
+    // and they are changing their vote
+    if (updoot && updoot.value !== realValue) {
+      await getConnection().transaction(async (tm) => {
+        await tm.query(
+          `
+        update updoot
+        set value = $1
+        where "postId" = $2 and "userId" = $3
+        `,
+          [realValue, postId, userId]
+        )
 
-    COMMIT;
-    `)
- 
+        await tm.query(
+          `update post
+        set points = points + $1
+        where id = $2`,
+          [2 * realValue, postId]
+        )
+      })
+    } else if (!updoot) {
+      // has never voted before
+      await getConnection().transaction(async (tm) => {
+        await tm.query(
+          `
+        insert into updoot ("userId", "postId", value)
+        values ($1, $2, $3);
+        `,
+          [userId, postId, realValue]
+        )
+
+        await tm.query(
+          `update post
+        set points = points + $1
+        where id = $2`,
+          [realValue, postId]
+        )
+      })
+    }
+
     return true
   }
 
@@ -80,18 +102,26 @@ export class PostResolver {
   async posts(
     @Arg("limit", () => Int) limit: number,
     @Arg("cursor", () => String, { nullable: true }) cursor: string | null,
-    @Info() info: any
+    @Ctx() { req }: MyContext
   ): Promise<PaginatedPosts> {
-    const realLimit = Math.min(50, limit);
+    const realLimit = Math.min(50, limit)
     const realLimitPlusOne = realLimit + 1
 
-    const replacements: any[] = [realLimitPlusOne];
+    const replacements: any[] = [realLimitPlusOne]
 
-    if(cursor) {
-      replacements.push(new Date(parseInt(cursor)))
+    if (req.session.userId) {
+      replacements.push(req.session.userId)
     }
 
-    const posts = await getConnection().query(`
+    let cursorIdx = 3
+
+    if (cursor) {
+      replacements.push(new Date(parseInt(cursor)))
+      cursorIdx = replacements.length
+    }
+
+    const posts = await getConnection().query(
+      `
     select p.*, 
     json_build_object(
       'id', u.id,
@@ -99,13 +129,20 @@ export class PostResolver {
       'email', u.email,
       'createdAt', u."createdAt",
       'updatedAt', u."updatedAt"
-      ) creator
+      ) creator,
+    ${
+      req.session.userId
+        ? '(select value from updoot where "userId" = $2 and "postId" = p.id) "voteStatus"'
+        : 'null as "voteStatus"'
+    }
     from post p
     inner join public.user u on u.id = p."creatorId"
-    ${cursor ? `where p."createdAt" < $2`: ''}
+    ${cursor ? `where p."createdAt" < $${cursorIdx}` : ""}
     order by p."createdAt" DESC
     limit $1
-    `, replacements)
+    `,
+      replacements
+    )
 
     // const qb = getConnection()
     //   .getRepository(Post)
@@ -120,12 +157,15 @@ export class PostResolver {
 
     // const posts = await qb.getMany()
 
-    return { posts: posts.slice(0, realLimit), hasMore: posts.length === realLimitPlusOne };
+    return {
+      posts: posts.slice(0, realLimit),
+      hasMore: posts.length === realLimitPlusOne,
+    }
   }
 
   @Query(() => Post, { nullable: true })
   post(@Arg("id", () => Int) id: number): Promise<Post | undefined> {
-    return Post.findOne(id);
+    return Post.findOne(id)
   }
 
   @Mutation(() => Post)
@@ -137,7 +177,7 @@ export class PostResolver {
     return Post.create({
       ...input,
       creatorId: req.session.userId,
-    }).save();
+    }).save()
   }
 
   @Mutation(() => Post, { nullable: true })
@@ -145,19 +185,19 @@ export class PostResolver {
     @Arg("id", () => Int) id: number,
     @Arg("title", () => String, { nullable: true }) title: string
   ): Promise<Post | null> {
-    const post = await Post.findOne(id);
+    const post = await Post.findOne(id)
     if (!post) {
-      return null;
+      return null
     }
     if (typeof title !== "undefined") {
-      Post.update({ id }, { title });
+      Post.update({ id }, { title })
     }
-    return post;
+    return post
   }
 
   @Mutation(() => Boolean)
   async deletePost(@Arg("id", () => Int) id: number): Promise<Boolean> {
-    await Post.delete(id);
-    return true;
+    await Post.delete(id)
+    return true
   }
 }
